@@ -2,7 +2,7 @@
 // +build ignore
 // ^^ this is a golang build tag meant to exclude this C file from compilation by the CGO compiler
 
-/* 
+/*
 Note: This file is licenced differently from the rest of the project
 SPDX-License-Identifier: GPL-2.0
 Copyright (C) Aqua Security inc.
@@ -80,10 +80,12 @@ Copyright (C) Aqua Security inc.
 #define PT_REGS_PARM6(ctx)  ((ctx)->gpr[8])
 #endif
 
-
 #ifdef CORE
 extern bool CONFIG_ARCH_HAS_SYSCALL_WRAPPER __kconfig;
+#else
+bool CONFIG_ARCH_HAS_SYSCALL_WRAPPER;
 #endif
+
 
 #define MAX_PERCPU_BUFSIZE  (1 << 15)     // This value is actually set by the kernel as an upper bound
 #define MAX_STRING_SIZE     4096          // Choosing this value to be the same as PATH_MAX
@@ -271,7 +273,7 @@ extern bool CONFIG_ARCH_HAS_SYSCALL_WRAPPER __kconfig;
 #define MAX_BIN_CHUNKS        256
 #endif
 #else
-// XXX: In the future, these values will be global volatile constants that 
+// XXX: In the future, these values will be global volatile constants that
 //      can be set at runtime from userspace go code. This way we can dynamically
 //      set them based on kernel version. libbpfgo needs this feature first.
 //      For now setting the lower limit is the safest option.
@@ -618,7 +620,7 @@ static __always_inline u32 get_task_ns_pid(struct task_struct *task)
 }
 
 static __always_inline u32 get_task_ns_tgid(struct task_struct *task)
-{    
+{
     struct nsproxy *namespaceproxy = READ_KERN(task->nsproxy);
     struct pid_namespace *pid_ns_children = READ_KERN(namespaceproxy->pid_ns_for_children);
     unsigned int level = READ_KERN(pid_ns_children->level);
@@ -711,7 +713,8 @@ static __always_inline bool is_arm64_compat(struct task_struct *task)
 static __always_inline bool is_powerpc_compat(struct task_struct *task)
 {
 #if defined(bpf_target_powerpc)
-    return READ_KERN(task->thread_info.flags) & _TIF_32BIT;
+//    return READ_KERN(task->thread_info.flags) & _TIF_32BIT;
+    return false;
 #else
     return false;
 #endif
@@ -1114,7 +1117,7 @@ static __always_inline int should_trace()
 
     if (!uint_filter_matches(CONFIG_UID_FILTER, &uid_filter, context.uid, UID_LESS, UID_GREATER))
     {
-        return 0; 
+        return 0;
     }
 
     if (!uint_filter_matches(CONFIG_MNT_NS_FILTER, &mnt_ns_filter, context.mnt_id, MNTNS_LESS, MNTNS_GREATER))
@@ -2102,11 +2105,18 @@ int tracepoint__raw_syscalls__sys_enter(struct bpf_raw_tracepoint_args *ctx)
     args_t args_tmp = {};
     int id = ctx->args[1];
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-
+#if defined(bpf_target_powerpc)
+    struct pt_regs *regs = (struct pt_regs*)ctx->args[0];
+    args_tmp.args[0] = READ_KERN(regs->gpr[3]);
+    args_tmp.args[1] = READ_KERN(regs->gpr[4]);
+    args_tmp.args[2] = READ_KERN(regs->gpr[5]);
+    args_tmp.args[3] = READ_KERN(regs->gpr[6]);
+    args_tmp.args[4] = READ_KERN(regs->gpr[7]);
+    args_tmp.args[5] = READ_KERN(regs->gpr[8]);
+#else
 if (CONFIG_ARCH_HAS_SYSCALL_WRAPPER) {
     struct pt_regs regs = {};
     bpf_probe_read(&regs, sizeof(struct pt_regs), (void*)ctx->args[0]);
-
     if (is_x86_compat(task)) {
 #if defined(bpf_target_x86)
         args_tmp.args[0] = regs.bx;
@@ -2132,6 +2142,7 @@ if (CONFIG_ARCH_HAS_SYSCALL_WRAPPER) {
     args_tmp.args[4] = ctx->args[4];
     args_tmp.args[5] = ctx->args[5];
 } // END CONFIG_ARCH_HAS_SYSCALL_WRAPPER
+#endif
 
     if (is_compat(task)) {
         // Translate 32bit syscalls to 64bit syscalls so we can send to the correct handler
@@ -2209,7 +2220,11 @@ int tracepoint__raw_syscalls__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     long ret = ctx->args[1];
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     struct pt_regs *regs = (struct pt_regs*)ctx->args[0];
+#if defined(bpf_target_powerpc)
+    int id = READ_KERN(regs->gpr[0]);
+#else
     int id = READ_KERN(regs->orig_ax);
+#endif
 
     if (is_compat(task)) {
         // Translate 32bit syscalls to 64bit syscalls so we can send to the correct handler
@@ -3961,7 +3976,7 @@ int BPF_KPROBE(trace_mprotect_alert)
     if (((prev_prot & (VM_WRITE|VM_EXEC)) == (VM_WRITE|VM_EXEC))
         && (reqprot & VM_EXEC) && !(reqprot & VM_WRITE)) {
         alert_t alert = {.ts = context.ts, .msg = ALERT_MPROT_W_REM, .payload = 0 };
-        if (get_config(CONFIG_EXTRACT_DYN_CODE)) 
+        if (get_config(CONFIG_EXTRACT_DYN_CODE))
             alert.payload = 1;
         save_to_submit_buf(submit_p, &alert, sizeof(alert_t), ALERT_T, DEC_ARG(0, *tags));
         events_perf_submit(ctx);
